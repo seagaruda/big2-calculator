@@ -2,11 +2,11 @@ package com.big2.calculator.models;
 
 public class Player {
     private String name;
-    private double balance;
+    private int balance;
 
     public Player(String name) {
         this.name = name;
-        this.balance = 0.0;
+        this.balance = 0;
     }
 
     public String getName() {
@@ -17,21 +17,20 @@ public class Player {
         this.name = name;
     }
 
-    public double getBalance() {
+    public int getBalance() {
         return balance;
     }
 
-    public void setBalance(double balance) {
+    public void setBalance(int balance) {
         this.balance = balance;
     }
 
-    public void addToBalance(double amount) {
+    public void addToBalance(int amount) {
         this.balance += amount;
     }
 
     @Override
     public String toString() {
-        String sign = balance >= 0 ? "+" : "";
-        return name + ": " + sign + "$" + String.format("%.2f", balance);
+        return name + ": " + (balance >= 0 ? "+" : "") + balance + " 分";
     }
 }
