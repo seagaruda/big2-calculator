@@ -43,10 +43,54 @@ jobs:
           distribution: temurin
           java-version: '11'
 
-      - name: Build debug & release APKs
+      - name: Build release APK
         run: |
           chmod +x gradlew
-          ./gradlew assembleDebug assembleRelease --no-daemon
+          ./gradlew assembleRelease --no-daemon
+
+      - name: Sign release APK
+        env:
+          TAG: ${{ steps.resolve.outputs.tag }}
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+        run: |
+          set -euo pipefail
+          UNSIGNED="app/build/outputs/apk/release/app-release-unsigned.apk"
+          ALIGNED="$RUNNER_TEMP/app-release-aligned.apk"
+          SIGNED="app/build/outputs/apk/release/Big2Calculator-${TAG}-signed.apk"
+
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            KEYSTORE="$RUNNER_TEMP/big2-release.keystore"
+            echo "$KEYSTORE_BASE64" | base64 -d > "$KEYSTORE"
+            STOREPASS="$KEYSTORE_PASSWORD"
+            KEYPASS="${KEY_PASSWORD:-$STOREPASS}"
+            ALIAS="${KEY_ALIAS:-big2calculator}"
+          else
+            KEYSTORE="$RUNNER_TEMP/big2-release.keystore"
+            STOREPASS="big2calculator"
+            KEYPASS="big2calculator"
+            ALIAS="big2calculator"
+            keytool -genkeypair -v -keystore "$KEYSTORE" -alias "$ALIAS" -keyalg RSA -keysize 2048 -validity 10000 -storepass "$STOREPASS" -keypass "$KEYPASS" -dname "CN=Big2Calculator, OU=Dev, O=seagaruda, C=CN"
+            echo "::notice::Generated an ephemeral release keystore. To keep the same signature across releases, add KEYSTORE_BASE64 / KEYSTORE_PASSWORD / KEY_ALIAS / KEY_PASSWORD repository secrets."
+          fi
+
+          SDK_ROOT="${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}"
+          ZIPALIGN="$(find "$SDK_ROOT/build-tools" -type f -name zipalign | sort | tail -1)"
+          APKSIGNER="$(find "$SDK_ROOT/build-tools" -type f -name apksigner | sort | tail -1)"
+          echo "Using zipalign: $ZIPALIGN"
+          echo "Using apksigner: $APKSIGNER"
+
+          "$ZIPALIGN" -f -p 4 "$UNSIGNED" "$ALIGNED"
+          "$APKSIGNER" sign \
+            --ks "$KEYSTORE" \
+            --ks-key-alias "$ALIAS" \
+            --ks-pass "pass:$STOREPASS" \
+            --key-pass "pass:$KEYPASS" \
+            --out "$SIGNED" \
+            "$ALIGNED"
+          "$APKSIGNER" verify --min-sdk-version 21 "$SIGNED"
 
       - name: Publish GitHub Release
         env:
@@ -54,15 +98,20 @@ jobs:
           TAG: ${{ steps.resolve.outputs.tag }}
         run: |
           set -euo pipefail
-          mapfile -t ASSETS < <(find app/build/outputs/apk -type f -name '*.apk' | sort)
-          printf 'Assets to attach:\n'
-          if [ "${#ASSETS[@]}" -eq 0 ]; then
-            printf ' - (none)\n'
-            gh release create "$TAG" \
-              --repo "${{ github.repository }}" \
-              --title "Release $TAG" \
-              --generate-notes
+          SIGNED="app/build/outputs/apk/release/Big2Calculator-${TAG}-signed.apk"
+          ASSETS=()
+          if [ -f "$SIGNED" ]; then
+            ASSETS+=("$SIGNED")
+          fi
+          if [ -f "app/build/outputs/apk/debug/app-debug.apk" ]; then
+            ASSETS+=("app/build/outputs/apk/debug/app-debug.apk")
+          fi
+
+          if gh release view "$TAG" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            echo "Release $TAG already exists, uploading assets."
+            gh release upload "$TAG" "${ASSETS[@]}" --clobber --repo "${{ github.repository }}"
           else
+            printf 'Assets to attach:\n'
             printf ' - %s\n' "${ASSETS[@]}"
             gh release create "$TAG" \
               --repo "${{ github.repository }}" \
