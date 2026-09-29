@@ -1,0 +1,72 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '要发布到 Releases 的 tag（必须已存在，例如 v2.1）'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve tag
+        id: resolve
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          INPUT_TAG: ${{ github.event.inputs.tag }}
+        run: |
+          if [ "$EVENT_NAME" = "push" ]; then
+            echo "tag=${REF_NAME#refs/tags/}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${INPUT_TAG}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.resolve.outputs.tag }}
+          fetch-depth: 0
+
+      - name: Set up JDK 11
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '11'
+
+      - name: Build debug & release APKs
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug assembleRelease --no-daemon
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.resolve.outputs.tag }}
+        run: |
+          set -euo pipefail
+          mapfile -t ASSETS < <(find app/build/outputs/apk -type f -name '*.apk' | sort)
+          printf 'Assets to attach:\n'
+          if [ "${#ASSETS[@]}" -eq 0 ]; then
+            printf ' - (none)\n'
+            gh release create "$TAG" \
+              --repo "${{ github.repository }}" \
+              --title "Release $TAG" \
+              --generate-notes
+          else
+            printf ' - %s\n' "${ASSETS[@]}"
+            gh release create "$TAG" \
+              --repo "${{ github.repository }}" \
+              --title "Release $TAG" \
+              --generate-notes \
+              "${ASSETS[@]}"
+          fi
